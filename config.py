@@ -9,17 +9,13 @@ OPENROUTER_MODEL = "qwen/qwen3-vl-30b-a3b-thinking"  # или другая мо�
 
 # Настройки обработки
 TEMPERATURE = 0.2
-MAX_TOKENS = 12856
+MAX_TOKENS_PER_REQUEST = 12856
+REQUEST_TIMEOUT = 60
+DELAY_BETWEEN_REQUESTS = 2  # секунд между запросами к API
 
 # Пути к файлам
-INPUT_FILE = "physics_1.json"
-RESULTS_DIR = "C:\\Users\Mi\PycharmProjects\PythonProject"
-ONTOLOGY_DIR = f"{RESULTS_DIR}/ontology"      # для сохранения созданной онтологии
-ENTITIES_DIR = f"{RESULTS_DIR}/entities"      # для выделенных сущностей
-NORMALIZED_DIR = f"{RESULTS_DIR}/normalized"  # для нормализованного текста
-DEBUG_DIR = f"{RESULTS_DIR}/debug"
+INPUT_FILE = "it_1.json"
+RESULTS_FILE = "results/processed_documents.json"
 
-# Создаём папки, если их нет
-import os
-for dir_path in [RESULTS_DIR, ONTOLOGY_DIR, ENTITIES_DIR, NORMALIZED_DIR]:
-    os.makedirs(dir_path, exist_ok=True)
+# Максимальное количество абзацев на один запрос (чтобы не превысить лимиты)
+MAX_PARAGRAPHS_PER_BATCH = 5
