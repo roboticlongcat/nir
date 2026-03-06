@@ -1,14 +1,19 @@
 """
 Модуль для обработки документов: выделение сущностей
-БЕЗ нормализации текста — только словарь и связи абзац-сущность
+Один запрос на весь документ — максимальная скорость
 """
 
 import json
 import requests
 import time
 import re
+import os
 from typing import Dict, List, Any, Optional
 import config
+
+# Создаём папку для отладки
+DEBUG_DIR = "debug_responses"
+os.makedirs(DEBUG_DIR, exist_ok=True)
 
 def load_input_data(filepath: str) -> Dict[str, Any]:
     """Загрузка входного JSON-файла"""
@@ -22,86 +27,77 @@ def load_input_data(filepath: str) -> Dict[str, Any]:
         print(f"❌ Ошибка парсинга JSON: {e}")
         return None
 
-def extract_paragraphs(doc: Dict[str, Any]) -> List[str]:
+def extract_full_text(doc: Dict[str, Any]) -> str:
     """
-    Извлечение всех абзацев из документа
-    Учитывает разделители [PARAGRAPH_END] и [PAGE_END]
+    Извлечение всего текста из документа целиком
     """
-    paragraphs = []
-
+    full_text = ""
     for page in doc.get("pages", []):
         content = page.get("content", "")
-        if not isinstance(content, str):
-            continue
+        if isinstance(content, str):
+            # Убираем маркеры, но сохраняем текст
+            clean_text = content.replace("[PARAGRAPH_END]", "\n\n").replace("[PAGE_END]", "\n\n")
+            # Убираем маркеры формул и изображений
+            clean_text = re.sub(r'\[FORMULA\]', '', clean_text)
+            clean_text = re.sub(r'\[ИЗОБРАЖЕНИЕ\]', '', clean_text)
+            full_text += clean_text + "\n\n"
 
-        # Разбиваем по маркерам абзацев
-        page_paragraphs = content.split("[PARAGRAPH_END]")
-
-        for para in page_paragraphs:
-            # Убираем маркеры страниц и лишние пробелы
-            clean_para = para.replace("[PAGE_END]", "").strip()
-            # Пропускаем пустые абзацы и абзацы только с формулами/изображениями
-            if clean_para and not clean_para.startswith("[FORMULA]") and not clean_para.startswith("[ИЗОБРАЖЕНИЕ]"):
-                paragraphs.append(clean_para)
-
-    return paragraphs
+    return full_text.strip()
 
 def clean_json_response(text: Any) -> str:
-    """
-    Очистка ответа от LLM от возможного мусора
-    """
-    # Проверяем тип входных данных
+    """Очистка ответа от LLM от возможного мусора"""
     if not isinstance(text, str):
         print(f"   ⚠️ clean_json_response получил не строку: {type(text)}")
         return "{}"
+
+    # Сохраняем сырой ответ для отладки
+    with open(f"{DEBUG_DIR}/raw_response_{int(time.time())}.txt", "w", encoding="utf-8") as f:
+        f.write(text)
 
     # Убираем markdown-форматирование
     text = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
     text = re.sub(r'```\s*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^```\s*', '', text, flags=re.MULTILINE)
 
-    # Убираем лишние пробелы и переводы строк в начале и конце
+    # Убираем всё до первого {
+    first_brace = text.find('{')
+    if first_brace > 0:
+        text = text[first_brace:]
+
+    # Убираем всё после последнего }
+    last_brace = text.rfind('}')
+    if last_brace > 0:
+        text = text[:last_brace+1]
+
     text = text.strip()
 
-    # Если текст пустой, возвращаем пустой объект
     if not text:
         return "{}"
 
-    # Проверяем, начинается ли текст с '{' и заканчивается ли '}'
-    if not (text.startswith('{') and text.endswith('}')):
-        # Пробуем найти JSON в тексте
-        json_match = re.search(r'(\{.*\})', text, re.DOTALL)
-        if json_match:
-            text = json_match.group(1)
-        else:
-            print(f"   ⚠️ Не удалось найти JSON в ответе")
-            return "{}"
-
     return text
 
-
-def create_entity_extraction_prompt(paragraphs: List[str], start_idx: int) -> str:
+def create_entity_extraction_prompt(full_text: str) -> str:
     """
-    Создание промпта для выделения сущностей из абзацев
+    Создание промпта для выделения сущностей из всего текста
     """
-    paragraphs_text = ""
-    for i, p in enumerate(paragraphs):
-        paragraphs_text += f"[АБЗАЦ {start_idx + i}]: {p}\n\n"
+    # Ограничиваем длину текста для токенов
+    if len(full_text) > 80000:
+        full_text = full_text[:80000] + "... (текст обрезан для обработки)"
 
-    prompt = f"""Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из каждого абзаца и определить их онтологические классы.
+    prompt = f"""Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из всего текста и определить их онтологические классы.
 
 ### 📥 Входные данные:
-Текст, разбитый на абзацы (каждый абзац имеет номер):
+Весь текст документа (единым блоком, абзацы разделены двойным переносом строки \n\n):
 
-{paragraphs_text}
+{full_text}
 
 ### 🎯 Задача:
-1. Для каждого абзаца выдели **ключевые смысловые сущности** — термины, понятия, важные для понимания текста.
+1. Проанализируй весь текст и выдели **все ключевые смысловые сущности** — термины, понятия, важные для понимания текста.
 2. Для каждой уникальной сущности определи её **онтологический класс** (обобщающая категория).
 3. Верни **словарь всех сущностей** с их классами.
-4. Верни **связи абзац-сущность** — для каждого абзаца список сущностей (только названия, без классов).
+4. Для каждого абзаца (начиная с номера 0) укажи список сущностей, которые в нём встречаются.
 
-Слова могут быть разных регистров, проверяй это и не добавляй в словарь слова, которые уже есть!
+ВАЖНО: Слова могут быть разных регистров, проверяй это и не добавляй в словарь дубликаты.
 
 ### 📌 КРИТЕРИИ ОНТОЛОГИЧЕСКОГО КЛАССА:
 
@@ -116,44 +112,43 @@ def create_entity_extraction_prompt(paragraphs: List[str], start_idx: int) -> st
 - События ("сбил", "произошло", "выполнил")
 - Свойства или атрибуты ("красный", "быстрый", "важный")
 - Конкретные экземпляры ("Иван Петров", "Windows 10")
-- Общие слова ("ситуация", "схема", "область", "действие")
-- Связки по типу "Тип объекта - Объект" или "Объект - Объект" (только если он не относится к категории терминов), не нужно плодить лишнее
-- Какие-либо параметры ("(3)", "γ") — формулы зависят от статьи и автора, это не слова
+- Общие слова ("ситуация", "схема", "область", "действие", "процесс")
+- Связки по типу "Тип объекта - Объект" (только если не термин)
+- Параметры и формулы ("(3)", "γ", "x_i") — это не слова
 
-### 📌 ПРАВИЛА ВЫДЕЛЕНИЯ КАНОНИЧЕСКОЙ ФОРМЫ СУЩНОСТИ:
+### 📌 ПРАВИЛА ВЫДЕЛЕНИЯ КАНОНИЧЕСКОЙ ФОРМЫ:
 
-Каноническая форма — это строка, которую ты извлекаешь из текста. Она выбирается так, чтобы **сохранять идентичность объекта**.
+Каноническая форма сохраняет идентичность объекта.
 
-**Основные принципы:**
+1. **Если удаление слова не меняет объект — слово не включается.**
+   ✅ "компания Метаграф" → сущность "Метаграф"
+   ✅ "корпорация Microsoft" → сущность "Microsoft"
 
-1. **Если удаление слова не меняет того, к какому объекту относится запись, такое слово не включается в каноническую форму.**
-   - ✅ Пример: в конструкции "компания Метаграф" сущностью является "Метаграф", а слово "компания" не входит в каноническую запись
-   - ✅ Пример: "корпорация Microsoft" → сущность "Microsoft"
+2. **Если оба компонента обязательны — сохраняем полностью.**
+   ✅ "интеграл Ито" — полное название
+   ✅ "метод конечных элементов" — полное название
 
-2. **Если оба компонента обязательны, так как удаление одного приводит к другому понятию — сохраняем полностью.**
-   - ✅ Пример: "интеграл Ито" — оба компонента обязательны, удаление "Ито" приводит к другому понятию
-   - ✅ Пример: "метод конечных элементов" — полное название
-   - ✅ Пример: "теория относительности" — полное название
+3. **Полные официальные названия — единая сущность.**
+   ✅ "Московский Государственный Технический Университет"
 
-3. **Полные официальные названия фиксируются как единая сущность.**
-   - ✅ Пример: "Московский Государственный Технический Университет" — единая сущность
-   - ✅ Пример: "Институт системного программирования РАН" — единая сущность
-
-4. **Математические формулы и обозначения без словесного описания не выделяются как сущности.**
-   - ❌ Неправильно: "(3)", "γ", "x_i", "∑"
-   - ✅ Правильно: "коэффициент γ" → сущность "коэффициент гамма"
+4. **Формулы без описания — не сущности.**
+   ❌ "(3)", "γ", "x_i"
+   ✅ "коэффициент γ" → "коэффициент гамма"
 
 ### 📌 ПРИМЕРЫ ОНТОЛОГИЧЕСКИХ КЛАССОВ:
 
-| Сущность | Онтологический класс | Пояснение |
-|----------|---------------------|-----------|
-| база данных | Хранилище данных | Класс объектов для хранения информации |
-| алгоритм | Метод | Класс последовательностей действий |
-| пакет | Единица данных | Класс структурированных блоков информации |
-| браузер | Приложение | Класс программ для просмотра веб-страниц |
-| интеграл Ито | Математический метод | Полное название, удаление "Ито" меняет смысл |
-| Microsoft | Компания | Имя собственное, слово "корпорация" не входит |
-| метод конечных элементов | Численный метод | Полное название как единая сущность |
+| Сущность | Онтологический класс |
+|----------|---------------------|
+| база данных | Хранилище данных |
+| алгоритм | Метод |
+| пакет | Единица данных |
+| браузер | Приложение |
+| интеграл Ито | Математический метод |
+| Microsoft | Компания |
+| метод конечных элементов | Численный метод |
+| пользователь | Субъект |
+| сервер | Оборудование |
+| протокол | Стандарт |
 
 ### 📤 Формат вывода (строго JSON):
 {{
@@ -164,22 +159,30 @@ def create_entity_extraction_prompt(paragraphs: List[str], start_idx: int) -> st
   }},
   "paragraph_entities": [
     {{
-      "num": {start_idx},
+      "num": 0,
       "entities": ["сущность_1", "сущность_2"]
     }},
     {{
-      "num": {start_idx + 1},
-      "entities": ["сущность_3", "сущность_4"]
+      "num": 1,
+      "entities": ["сущность_2", "сущность_3"]
+    }},
+    {{
+      "num": 2,
+      "entities": ["сущность_1", "сущность_3"]
     }}
   ]
 }}
 
-Верни ТОЛЬКО JSON, без пояснений."""
+Где:
+- dictionary — словарь всех сущностей с их классами
+- paragraph_entities — массив объектов, где для каждого абзаца указан его номер (num) и список сущностей (entities)
+
+ВАЖНО: Верни ТОЛЬКО JSON, без пояснений, без markdown, без текста до или после JSON."""
 
     return prompt
 
-def call_openrouter(prompt: str, request_type: str, doc_id: int, batch_num: int = 0) -> Optional[Dict[str, Any]]:
-    """Отправка запроса к OpenRouter API"""
+def call_openrouter(prompt: str, doc_id: int) -> Optional[Dict[str, Any]]:
+    """Один запрос к OpenRouter API на весь документ"""
 
     headers = {
         "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
@@ -198,7 +201,7 @@ def call_openrouter(prompt: str, request_type: str, doc_id: int, batch_num: int 
     }
 
     try:
-        print(f"   📤 Отправка {request_type} запроса (документ {doc_id}{f', часть {batch_num}' if batch_num else ''})...")
+        print(f"   📤 Отправка запроса (документ {doc_id})...")
         response = requests.post(
             config.OPENROUTER_URL,
             headers=headers,
@@ -210,59 +213,52 @@ def call_openrouter(prompt: str, request_type: str, doc_id: int, batch_num: int 
 
         if response.status_code != 200:
             print(f"   ❌ Ошибка HTTP {response.status_code}")
-            print(f"   Ответ: {response.text[:200]}")
+            if response.text:
+                print(f"   Ответ: {response.text[:500]}")
             return None
 
-        # Пробуем распарсить JSON ответа от API
-        try:
-            return response.json()
-        except json.JSONDecodeError as e:
-            print(f"   ❌ Ошибка парсинга ответа API: {e}")
-            print(f"   Сырой ответ: {response.text[:200]}")
-            return None
+        # Сохраняем полный ответ API для отладки
+        debug_file = f"{DEBUG_DIR}/api_response_{doc_id}_{int(time.time())}.json"
+        with open(debug_file, "w", encoding="utf-8") as f:
+            json.dump(response.json(), f, ensure_ascii=False, indent=2)
 
-    except requests.exceptions.Timeout:
-        print("   ❌ Таймаут соединения")
-        return None
-    except requests.exceptions.ConnectionError:
-        print("   ❌ Ошибка соединения")
-        return None
+        return response.json()
+
     except Exception as e:
         print(f"   ❌ Ошибка соединения: {e}")
         return None
 
-def parse_llm_response(response_text: Any) -> Optional[Dict[str, Any]]:
-    """
-    Парсинг ответа от LLM с обработкой ошибок
-    """
-    # Проверяем тип входных данных
+def parse_llm_response(response_text: Any, doc_id: int) -> Optional[Dict[str, Any]]:
+    """Парсинг ответа от LLM"""
     if not isinstance(response_text, str):
         print(f"   ❌ parse_llm_response получил не строку: {type(response_text)}")
-        if response_text is None:
-            print("   Ответ от API пустой (None)")
         return None
 
-    try:
-        # Очищаем ответ
-        cleaned = clean_json_response(response_text)
+    # Сохраняем сырой текст ответа
+    debug_file = f"{DEBUG_DIR}/llm_response_{doc_id}_{int(time.time())}.txt"
+    with open(debug_file, "w", encoding="utf-8") as f:
+        f.write(response_text)
 
-        # Пробуем распарсить
+    cleaned = clean_json_response(response_text)
+
+    try:
         result = json.loads(cleaned)
         return result
-
     except json.JSONDecodeError as e:
         print(f"   ❌ Ошибка парсинга JSON: {e}")
-        print(f"   Проблемный текст (первые 200 символов): {response_text[:200]}")
+        print(f"   Очищенный текст (первые 200 символов): {cleaned[:200]}")
 
         # Пробуем найти JSON вручную
         try:
-            # Ищем начало и конец JSON
-            start = response_text.find('{')
-            end = response_text.rfind('}')
-            if start != -1 and end != -1 and end > start:
-                json_str = response_text[start:end+1]
-                result = json.loads(json_str)
-                print(f"   ✅ JSON восстановлен вручную")
+            # Ищем любой JSON объект
+            import re
+            json_pattern = r'\{[^{}]*\}'
+            matches = re.findall(json_pattern, response_text)
+            if matches:
+                # Берём самый длинный (скорее всего нужный)
+                best_match = max(matches, key=len)
+                result = json.loads(best_match)
+                print(f"   ✅ JSON восстановлен вручную (найден фрагмент)")
                 return result
         except:
             pass
@@ -271,106 +267,80 @@ def parse_llm_response(response_text: Any) -> Optional[Dict[str, Any]]:
 
 def process_document(doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Обработка одного документа — выделение сущностей и связей
-    БЕЗ нормализации текста
+    Обработка одного документа — ОДИН ЗАПРОС на весь документ
     """
 
     doc_id = doc.get("doc_id", "unknown")
     print(f"\n📄 Обработка документа: {doc.get('source_file', 'unknown')}")
     print(f"   ID: {doc_id}, язык: {doc.get('language', 'unknown')}")
 
-    # Извлекаем абзацы
-    paragraphs = extract_paragraphs(doc)
-    print(f"   📊 Найдено абзацев: {len(paragraphs)}")
+    # Извлекаем весь текст целиком
+    full_text = extract_full_text(doc)
+    text_len = len(full_text)
+    print(f"   📊 Длина текста: {text_len} символов")
 
-    if not paragraphs:
-        print("   ⚠️ Нет абзацев для обработки")
+    if text_len < 100:
+        print("   ⚠️ Текст слишком короткий")
         return None
 
-    # Разбиваем на батчи
-    batches = []
-    for i in range(0, len(paragraphs), config.MAX_PARAGRAPHS_PER_BATCH):
-        end_idx = min(i + config.MAX_PARAGRAPHS_PER_BATCH, len(paragraphs))
-        batches.append((i, paragraphs[i:end_idx]))
+    # Один запрос на весь документ
+    print(f"\n🔨 ОБРАБОТКА ДОКУМЕНТА (ОДИН ЗАПРОС)")
 
-    print(f"   📦 Разбито на {len(batches)} батчей")
+    prompt = create_entity_extraction_prompt(full_text)
+    response = call_openrouter(prompt, doc_id)
 
-    # Собираем результаты со всех батчей
-    all_dictionaries = []
-    all_paragraph_entities = []
+    if not response:
+        print("   ❌ Нет ответа от API")
+        return None
 
-    for batch_idx, (start_idx, batch_paragraphs) in enumerate(batches, 1):
-        print(f"\n   📦 Батч {batch_idx}/{len(batches)} (абзацы {start_idx}-{start_idx + len(batch_paragraphs) - 1})")
-
-        prompt = create_entity_extraction_prompt(batch_paragraphs, start_idx)
-        response = call_openrouter(prompt, "выделение сущностей", doc_id, batch_idx)
-
-        if not response:
-            print(f"   ⚠️ Пропускаем батч {batch_idx} (нет ответа от API)")
-            continue
-
-        # Извлекаем текст ответа
-        try:
-            if "choices" not in response or not response["choices"]:
-                print(f"   ⚠️ Нет choices в ответе")
-                continue
-
-            message = response["choices"][0].get("message", {})
-            if "content" not in message:
-                print(f"   ⚠️ Нет content в message")
-                continue
-
-            result_text = message["content"]
-
-        except Exception as e:
-            print(f"   ❌ Ошибка извлечения текста ответа: {e}")
-            continue
-
-        # Парсим ответ
-        parsed = parse_llm_response(result_text)
-
-        if not parsed:
-            print(f"   ⚠️ Не удалось распарсить ответ для батча {batch_idx}")
-            continue
-
-        # Сохраняем словарь
-        if "dictionary" in parsed and isinstance(parsed["dictionary"], dict):
-            all_dictionaries.append(parsed["dictionary"])
-            print(f"   ✅ Найдено сущностей: {len(parsed['dictionary'])}")
-
-        # Сохраняем связи абзац-сущность
-        if "paragraph_entities" in parsed and isinstance(parsed["paragraph_entities"], list):
-            all_paragraph_entities.extend(parsed["paragraph_entities"])
-            print(f"   ✅ Обработано абзацев: {len(parsed['paragraph_entities'])}")
-
-        time.sleep(config.DELAY_BETWEEN_REQUESTS)
-
-    # Объединяем все словари
-    final_dictionary = {}
-    for d in all_dictionaries:
-        if isinstance(d, dict):
-            final_dictionary.update(d)
-
-    # Сортируем связи по номеру абзаца
+    # Извлекаем текст ответа
     try:
-        all_paragraph_entities.sort(key=lambda x: x.get("num", 0))
+        if "choices" not in response or not response["choices"]:
+            print("   ❌ Нет choices в ответе")
+            return None
+
+        message = response["choices"][0].get("message", {})
+        if "content" not in message:
+            print("   ❌ Нет content в message")
+            return None
+
+        result_text = message["content"]
     except Exception as e:
-        print(f"   ⚠️ Ошибка сортировки абзацев: {e}")
-
-    print(f"\n   📚 Всего уникальных сущностей: {len(final_dictionary)}")
-    print(f"   📚 Всего абзацев с сущностями: {len(all_paragraph_entities)}")
-
-    if not final_dictionary:
-        print("   ❌ Не удалось выделить сущности")
+        print(f"   ❌ Ошибка извлечения ответа: {e}")
         return None
 
-    # Формируем финальный результат
+    # Парсим ответ
+    parsed = parse_llm_response(result_text, doc_id)
+
+    if not parsed:
+        print("   ❌ Не удалось распарсить ответ")
+        return None
+
+    # Проверяем наличие обязательных полей
+    if "dictionary" not in parsed:
+        print("   ❌ Ответ не содержит dictionary")
+        print(f"   Ключи в ответе: {list(parsed.keys())}")
+        return None
+
+    if "paragraph_entities" not in parsed:
+        print("   ❌ Ответ не содержит paragraph_entities")
+        print(f"   Ключи в ответе: {list(parsed.keys())}")
+        return None
+
+    # Проверяем, что словарь не пустой
+    if not parsed["dictionary"]:
+        print("   ⚠️ Словарь сущностей пуст")
+
+    print(f"\n   📚 Найдено сущностей: {len(parsed['dictionary'])}")
+    print(f"   📚 Обработано абзацев: {len(parsed['paragraph_entities'])}")
+
+    # Формируем результат
     result = {
         "doc_id": doc_id,
         "source_file": doc.get("source_file", ""),
         "language": doc.get("language", ""),
-        "dictionary": final_dictionary,
-        "paragraph_entities": all_paragraph_entities
+        "dictionary": parsed["dictionary"],
+        "paragraph_entities": parsed["paragraph_entities"]
     }
 
     return result
