@@ -1,6 +1,6 @@
 """
 Модуль для обработки документов: выделение сущностей
-Один запрос на весь документ — максимальная скорость
+Со скользящим окном по страницам и контекстом между батчами
 """
 
 import json
@@ -8,12 +8,99 @@ import requests
 import time
 import re
 import os
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import config
 
 # Создаём папку для отладки
 DEBUG_DIR = "debug_responses"
 os.makedirs(DEBUG_DIR, exist_ok=True)
+
+class BatchContextManager:
+    """Управляет контекстом между батчами с резюмированием"""
+
+    def __init__(self, max_summaries=3, max_entities_per_summary=15):
+        self.max_summaries = max_summaries
+        self.max_entities_per_summary = max_entities_per_summary
+        self.summaries = []  # Список резюме по батчам
+        self.all_entities = {}  # Все сущности из документа
+        self.entity_frequency = {}  # Частота встречаемости
+
+    def update(self, batch_result: Dict[str, Any], batch_pages: str, batch_idx: int):
+        """Обновляет контекст на основе результатов батча"""
+        if not batch_result:
+            return
+
+        # Обновляем частоту и словарь сущностей
+        if "dictionary" in batch_result:
+            for entity, entity_class in batch_result["dictionary"].items():
+                self.entity_frequency[entity] = self.entity_frequency.get(entity, 0) + 1
+                self.all_entities[entity] = entity_class  # Перезаписываем класс (может уточняться)
+
+        # Создаём резюме батча
+        summary = self._create_batch_summary(batch_result, batch_pages, batch_idx)
+        self.summaries.append(summary)
+
+        # Оставляем только последние N резюме
+        if len(self.summaries) > self.max_summaries:
+            self.summaries = self.summaries[-self.max_summaries:]
+
+    def _create_batch_summary(self, batch_result: Dict[str, Any], batch_pages: str, batch_idx: int) -> str:
+        """Создает краткое резюме результатов батча"""
+        summary_lines = [f"--- БАТЧ {batch_idx}: Страницы {batch_pages} ---"]
+
+        # Самые частотные/важные сущности в этом батче
+        if "dictionary" in batch_result and batch_result["dictionary"]:
+            # Сортируем по частоте (если есть данные) или просто берем первые
+            entities = list(batch_result["dictionary"].items())
+
+            # Если есть информация о частоте из параграфов, используем её
+            entity_in_paragraphs = {}
+            if "paragraph_entities" in batch_result:
+                for para in batch_result["paragraph_entities"]:
+                    for entity in para.get("entities", []):
+                        entity_in_paragraphs[entity] = entity_in_paragraphs.get(entity, 0) + 1
+
+            # Сортируем по частоте встречаемости в параграфах
+            if entity_in_paragraphs:
+                entities.sort(key=lambda x: entity_in_paragraphs.get(x[0], 0), reverse=True)
+
+            # Берём топ-N
+            top_entities = entities[:self.max_entities_per_summary]
+            entities_str = ", ".join([f"'{e}' ({c})" for e, c in top_entities])
+            summary_lines.append(f"Ключевые сущности: {entities_str}")
+
+            if len(entities) > self.max_entities_per_summary:
+                summary_lines.append(f"И ещё {len(entities) - self.max_entities_per_summary} сущностей")
+
+        # Количество обработанных абзацев
+        if "paragraph_entities" in batch_result:
+            summary_lines.append(f"Абзацев в батче: {len(batch_result['paragraph_entities'])}")
+
+        return "\n".join(summary_lines)
+
+    def get_context_prompt(self) -> str:
+        """Формирует промпт с контекстом из предыдущих батчей"""
+        if not self.summaries:
+            return ""
+
+        context_parts = ["### 📋 КОНТЕКСТ ПРЕДЫДУЩИХ БАТЧЕЙ:"]
+
+        # Добавляем резюме батчей
+        for summary in self.summaries[:-1]:  # Все кроме текущего (он ещё не обработан)
+            context_parts.append(summary)
+
+        # Добавляем общую статистику для справки
+        if self.all_entities:
+            context_parts.append(f"\n--- ОБЩАЯ СТАТИСТИКА ---")
+            context_parts.append(f"Всего уникальных сущностей в документе: {len(self.all_entities)}")
+
+            # Топ-5 самых частотных сущностей
+            top_freq = sorted(self.entity_frequency.items(), key=lambda x: x[1], reverse=True)[:5]
+            if top_freq:
+                freq_str = ", ".join([f"'{e}' ({f} раз)" for e, f in top_freq])
+                context_parts.append(f"Наиболее частотные: {freq_str}")
+
+        return "\n".join(context_parts)
 
 def load_input_data(filepath: str) -> Dict[str, Any]:
     """Загрузка входного JSON-файла"""
@@ -27,78 +114,79 @@ def load_input_data(filepath: str) -> Dict[str, Any]:
         print(f"❌ Ошибка парсинга JSON: {e}")
         return None
 
-def extract_full_text(doc: Dict[str, Any]) -> str:
-    """
-    Извлечение всего текста из документа целиком
-    """
-    full_text = ""
-    for page in doc.get("pages", []):
-        content = page.get("content", "")
-        if isinstance(content, str):
-            # Убираем маркеры, но сохраняем текст
-            clean_text = content.replace("[PARAGRAPH_END]", "\n\n").replace("[PAGE_END]", "\n\n")
-            # Убираем маркеры формул и изображений
-            clean_text = re.sub(r'\[FORMULA\]', '', clean_text)
-            clean_text = re.sub(r'\[ИЗОБРАЖЕНИЕ\]', '', clean_text)
-            full_text += clean_text + "\n\n"
+def extract_page_text(page: Dict[str, Any]) -> str:
+    """Извлечение текста из одной страницы"""
+    content = page.get("content", "")
+    if not isinstance(content, str):
+        return ""
 
-    return full_text.strip()
+    # Убираем маркеры, но сохраняем текст
+    clean_text = content.replace("[PARAGRAPH_END]", "\n\n").replace("[PAGE_END]", "\n\n")
+    clean_text = re.sub(r'\[FORMULA\]', '', clean_text)
+    clean_text = re.sub(r'\[ИЗОБРАЖЕНИЕ\]', '', clean_text)
 
-def clean_json_response(text: Any) -> str:
-    """Очистка ответа от LLM от возможного мусора"""
-    if not isinstance(text, str):
-        print(f"   ⚠️ clean_json_response получил не строку: {type(text)}")
-        return "{}"
+    return clean_text.strip()
 
-    # Сохраняем сырой ответ для отладки
-    with open(f"{DEBUG_DIR}/raw_response_{int(time.time())}.txt", "w", encoding="utf-8") as f:
-        f.write(text)
+def estimate_tokens(text: str) -> int:
+    """Грубая оценка количества токенов (для русского языка 3 символа = 1 токен)"""
+    return len(text) // 3
 
-    # Убираем markdown-форматирование
-    text = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
-    text = re.sub(r'```\s*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^```\s*', '', text, flags=re.MULTILINE)
-
-    # Убираем всё до первого {
-    first_brace = text.find('{')
-    if first_brace > 0:
-        text = text[first_brace:]
-
-    # Убираем всё после последнего }
-    last_brace = text.rfind('}')
-    if last_brace > 0:
-        text = text[:last_brace+1]
-
-    text = text.strip()
-
+def truncate_to_token_limit(text: str, max_tokens: int) -> str:
+    """Обрезает текст до примерного лимита токенов"""
     if not text:
-        return "{}"
+        return text
 
-    return text
+    chars_per_token = 3
+    max_chars = max_tokens * chars_per_token
 
-def create_entity_extraction_prompt(full_text: str) -> str:
+    if len(text) <= max_chars:
+        return text
+
+    # Оставляем конец текста (более релевантный для контекста)
+    return "..." + text[-(max_chars-3):]
+
+def create_batches_with_context(doc: Dict[str, Any]) -> List[Tuple[int, int, str, str]]:
     """
-    Создание промпта для выделения сущностей из всего текста
+    Создание батчей со скользящим окном
+    Возвращает список кортежей (start_page, end_page, контекст_страниц, текст_для_обработки)
     """
-    # Ограничиваем длину текста для токенов
-    if len(full_text) > 80000:
-        full_text = full_text[:80000] + "... (текст обрезан для обработки)"
+    pages = doc.get("pages", [])
+    if not pages:
+        return []
 
-    prompt = f"""Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из всего текста и определить их онтологические классы.
+    batches = []
+    total_pages = len(pages)
 
-### 📥 Входные данные:
-Весь текст документа (единым блоком, абзацы разделены двойным переносом строки \n\n):
+    for start_idx in range(0, total_pages, config.PAGES_PER_BATCH):
+        end_idx = min(start_idx + config.PAGES_PER_BATCH, total_pages)
 
-{full_text}
+        # Контекст — предыдущие страницы (для локального понимания)
+        context_start = max(0, start_idx - config.CONTEXT_OVERLAP)
+        context_text = ""
+        for i in range(context_start, start_idx):
+            page_text = extract_page_text(pages[i])
+            if page_text:  # Добавляем только непустые страницы
+                context_text += f"[КОНТЕКСТ: СТРАНИЦА {i+1}]\n{page_text}\n\n"
 
-### 🎯 Задача:
-1. Проанализируй весь текст и выдели **все ключевые смысловые сущности** — термины, понятия, важные для понимания текста.
-2. Для каждой уникальной сущности определи её **онтологический класс** (обобщающая категория).
-3. Верни **словарь всех сущностей** с их классами.
-4. Для каждого абзаца (начиная с номера 0) укажи список сущностей, которые в нём встречаются.
+        # Текст для обработки — текущие страницы
+        main_text = ""
+        for i in range(start_idx, end_idx):
+            page_text = extract_page_text(pages[i])
+            if page_text:  # Добавляем только непустые страницы
+                main_text += f"[СТРАНИЦА {i+1}]\n{page_text}\n\n"
 
-ВАЖНО: Слова могут быть разных регистров, проверяй это и не добавляй в словарь дубликаты.
+        # Проверяем размер
+        estimated_tokens = estimate_tokens(context_text + main_text)
+        if estimated_tokens > config.MAX_TOKENS_PER_REQUEST * 0.8:
+            print(f"   ⚠️ Батч {start_idx+1}-{end_idx} может быть большим: ~{estimated_tokens} токенов")
 
+        batches.append((start_idx, end_idx, context_text, main_text))
+
+    return batches
+
+def get_entity_extraction_instructions() -> str:
+    """Возвращает инструкции по выделению сущностей"""
+    return """
 ### 📌 КРИТЕРИИ ОНТОЛОГИЧЕСКОГО КЛАССА:
 
 Онтологический класс — это **устойчивая категория сущностей**, а не событие, не свойство и не конкретный экземпляр.
@@ -113,12 +201,9 @@ def create_entity_extraction_prompt(full_text: str) -> str:
 - Свойства или атрибуты ("красный", "быстрый", "важный")
 - Конкретные экземпляры ("Иван Петров", "Windows 10")
 - Общие слова ("ситуация", "схема", "область", "действие", "процесс")
-- Связки по типу "Тип объекта - Объект" (только если не термин)
 - Параметры и формулы ("(3)", "γ", "x_i") — это не слова
 
 ### 📌 ПРАВИЛА ВЫДЕЛЕНИЯ КАНОНИЧЕСКОЙ ФОРМЫ:
-
-Каноническая форма сохраняет идентичность объекта.
 
 1. **Если удаление слова не меняет объект — слово не включается.**
    ✅ "компания Метаграф" → сущность "Метаграф"
@@ -131,10 +216,6 @@ def create_entity_extraction_prompt(full_text: str) -> str:
 3. **Полные официальные названия — единая сущность.**
    ✅ "Московский Государственный Технический Университет"
 
-4. **Формулы без описания — не сущности.**
-   ❌ "(3)", "γ", "x_i"
-   ✅ "коэффициент γ" → "коэффициент гамма"
-
 ### 📌 ПРИМЕРЫ ОНТОЛОГИЧЕСКИХ КЛАССОВ:
 
 | Сущность | Онтологический класс |
@@ -146,43 +227,58 @@ def create_entity_extraction_prompt(full_text: str) -> str:
 | интеграл Ито | Математический метод |
 | Microsoft | Компания |
 | метод конечных элементов | Численный метод |
-| пользователь | Субъект |
-| сервер | Оборудование |
-| протокол | Стандарт |
+"""
+
+def create_entity_extraction_prompt(context: str, main_text: str,
+                                   batch_context: str,
+                                   start_page: int, end_page: int) -> str:
+    """
+    Создание промпта для выделения сущностей с контекстом
+    """
+    prompt = f"""Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+{context if context else "(нет контекста страниц)"}
+
+{batch_context}
+
+### 📥 ТЕКСТ ДЛЯ ОБРАБОТКИ (страницы {start_page+1}-{end_page}):
+{main_text}
+
+### 🎯 Задача:
+1. Проанализируй текст на страницах {start_page+1}-{end_page} и выдели **все ключевые смысловые сущности**.
+2. Для каждой уникальной сущности определи её **онтологический класс**.
+3. Верни **словарь всех сущностей** с их классами.
+4. Для каждого абзаца укажи список сущностей, которые в нём встречаются.
+
+ВАЖНО: 
+- Используй контекст для понимания терминов, но выделяй сущности ТОЛЬКО из основного текста
+- Сохраняй согласованность с ранее выделенными сущностями
+- Не дублируй сущности (используй единую форму)
+
+{get_entity_extraction_instructions()}
 
 ### 📤 Формат вывода (строго JSON):
 {{
   "dictionary": {{
     "сущность_1": "класс_1",
-    "сущность_2": "класс_2",
-    "сущность_3": "класс_3"
+    "сущность_2": "класс_2"
   }},
   "paragraph_entities": [
     {{
-      "num": 0,
+      "num": 0,  // Глобальный номер абзаца
       "entities": ["сущность_1", "сущность_2"]
     }},
-    {{
-      "num": 1,
-      "entities": ["сущность_2", "сущность_3"]
-    }},
-    {{
-      "num": 2,
-      "entities": ["сущность_1", "сущность_3"]
-    }}
+    ...
   ]
 }}
 
-Где:
-- dictionary — словарь всех сущностей с их классами
-- paragraph_entities — массив объектов, где для каждого абзаца указан его номер (num) и список сущностей (entities)
-
-ВАЖНО: Верни ТОЛЬКО JSON, без пояснений, без markdown, без текста до или после JSON."""
+ВАЖНО: Верни ТОЛЬКО JSON, без пояснений, без markdown. Номера страниц будут добавлены автоматически пост-обработкой."""
 
     return prompt
 
-def call_openrouter(prompt: str, doc_id: int) -> Optional[Dict[str, Any]]:
-    """Один запрос к OpenRouter API на весь документ"""
+def call_openrouter(prompt: str, doc_id: int, batch_info: str) -> Optional[Dict[str, Any]]:
+    """Запрос к OpenRouter API"""
 
     headers = {
         "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
@@ -200,8 +296,13 @@ def call_openrouter(prompt: str, doc_id: int) -> Optional[Dict[str, Any]]:
         "max_tokens": config.MAX_TOKENS_PER_REQUEST
     }
 
+    # Сохраняем промпт для отладки
+    debug_file = os.path.join(DEBUG_DIR, f"prompt_doc{doc_id}_{batch_info.replace(' ', '_')}.txt")
+    with open(debug_file, 'w', encoding='utf-8') as f:
+        f.write(prompt[:2000])  # Сохраняем начало промпта
+
     try:
-        print(f"   📤 Отправка запроса (документ {doc_id})...")
+        print(f"   📤 {batch_info}")
         response = requests.post(
             config.OPENROUTER_URL,
             headers=headers,
@@ -209,138 +310,297 @@ def call_openrouter(prompt: str, doc_id: int) -> Optional[Dict[str, Any]]:
             timeout=config.REQUEST_TIMEOUT
         )
 
-        print(f"   📥 Статус ответа: {response.status_code}")
+        print(f"   📥 Статус: {response.status_code}")
 
         if response.status_code != 200:
-            print(f"   ❌ Ошибка HTTP {response.status_code}")
             if response.text:
                 print(f"   Ответ: {response.text[:500]}")
             return None
 
-        # Сохраняем полный ответ API для отладки
-        debug_file = f"{DEBUG_DIR}/api_response_{doc_id}_{int(time.time())}.json"
-        with open(debug_file, "w", encoding="utf-8") as f:
-            json.dump(response.json(), f, ensure_ascii=False, indent=2)
-
         return response.json()
 
+    except requests.exceptions.Timeout:
+        print(f"   ❌ Таймаут запроса")
+        return None
     except Exception as e:
-        print(f"   ❌ Ошибка соединения: {e}")
+        print(f"   ❌ Ошибка: {e}")
         return None
 
-def parse_llm_response(response_text: Any, doc_id: int) -> Optional[Dict[str, Any]]:
+def clean_json_response(text: Any) -> str:
+    """Очистка ответа от LLM"""
+    if not isinstance(text, str):
+        return "{}"
+
+    # Убираем markdown
+    text = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'```\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^```\s*', '', text, flags=re.MULTILINE)
+
+    # Ищем JSON
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    if first_brace != -1 and last_brace != -1:
+        text = text[first_brace:last_brace+1]
+
+    return text.strip()
+
+def validate_llm_response(parsed: Dict[str, Any]) -> bool:
+    """Проверяет корректность структуры ответа от LLM"""
+    if not isinstance(parsed, dict):
+        return False
+
+    # Проверяем наличие обязательных полей
+    if "dictionary" not in parsed or not isinstance(parsed["dictionary"], dict):
+        return False
+
+    if "paragraph_entities" not in parsed or not isinstance(parsed["paragraph_entities"], list):
+        return False
+
+    # Проверяем структуру paragraph_entities
+    for item in parsed["paragraph_entities"]:
+        if not isinstance(item, dict):
+            return False
+        if "num" not in item or not isinstance(item["num"], int):
+            return False
+        if "entities" not in item or not isinstance(item["entities"], list):
+            return False
+
+    return True
+
+def parse_llm_response(response_text: Any) -> Optional[Dict[str, Any]]:
     """Парсинг ответа от LLM"""
     if not isinstance(response_text, str):
-        print(f"   ❌ parse_llm_response получил не строку: {type(response_text)}")
         return None
-
-    # Сохраняем сырой текст ответа
-    debug_file = f"{DEBUG_DIR}/llm_response_{doc_id}_{int(time.time())}.txt"
-    with open(debug_file, "w", encoding="utf-8") as f:
-        f.write(response_text)
 
     cleaned = clean_json_response(response_text)
 
     try:
-        result = json.loads(cleaned)
-        return result
-    except json.JSONDecodeError as e:
-        print(f"   ❌ Ошибка парсинга JSON: {e}")
-        print(f"   Очищенный текст (первые 200 символов): {cleaned[:200]}")
-
-        # Пробуем найти JSON вручную
-        try:
-            # Ищем любой JSON объект
-            import re
-            json_pattern = r'\{[^{}]*\}'
-            matches = re.findall(json_pattern, response_text)
-            if matches:
-                # Берём самый длинный (скорее всего нужный)
-                best_match = max(matches, key=len)
-                result = json.loads(best_match)
-                print(f"   ✅ JSON восстановлен вручную (найден фрагмент)")
-                return result
-        except:
-            pass
-
+        parsed = json.loads(cleaned)
+        if validate_llm_response(parsed):
+            return parsed
+        else:
+            print(f"   ⚠️ Неверная структура ответа")
+            return None
+    except json.JSONDecodeError:
         return None
+
+def process_document_batch(doc_id: int, start_page: int, end_page: int,
+                          context: str, main_text: str,
+                          batch_context: str,
+                          global_paragraph_offset: int) -> Optional[Dict[str, Any]]:
+    """
+    Обработка одного батча страниц
+    """
+    prompt = create_entity_extraction_prompt(context, main_text, batch_context, start_page, end_page)
+    batch_info = f"страницы {start_page+1}-{end_page}"
+
+    response = call_openrouter(prompt, doc_id, batch_info)
+
+    if not response:
+        return None
+
+    try:
+        result_text = response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as e:
+        print(f"   ❌ Неверный формат ответа API: {e}")
+        return None
+
+    parsed = parse_llm_response(result_text)
+
+    if not parsed:
+        return None
+
+    # Сдвигаем номера абзацев с учётом глобального смещения
+    if "paragraph_entities" in parsed:
+        for item in parsed["paragraph_entities"]:
+            if "num" in item:
+                item["num"] += global_paragraph_offset
+
+    return parsed
+
+def count_paragraphs_in_pages(doc: Dict[str, Any], page_indices: List[int]) -> int:
+    """Подсчёт количества абзацев в указанных страницах"""
+    count = 0
+    pages = doc.get("pages", [])
+
+    for idx in page_indices:
+        if idx < len(pages):
+            content = pages[idx].get("content", "")
+            if isinstance(content, str) and content.strip():
+                # Считаем абзацы, только если есть контент
+                count += content.count("[PARAGRAPH_END]") + 1
+
+    return count
+
+
+def add_page_info(result: Dict[str, Any], original_doc: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Добавляет информацию о страницах с привязкой сущностей к страницам
+    """
+    pages = original_doc.get("pages", [])
+    paragraphs = result.get("paragraph_entities", [])
+
+    # Создаем маппинг абзац -> страница
+    paragraph_to_page = {}
+    global_para_idx = 0
+
+    for page_idx, page in enumerate(pages):
+        content = page.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            num_paragraphs = 0
+        else:
+            num_paragraphs = content.count("[PARAGRAPH_END]") + 1
+
+        # Запоминаем, какой странице принадлежат абзацы
+        for i in range(num_paragraphs):
+            paragraph_to_page[global_para_idx + i] = page_idx + 1  # +1 для читаемости
+
+        global_para_idx += num_paragraphs
+
+    # Добавляем номер страницы к каждому абзацу
+    enhanced_paragraphs = []
+    for para in paragraphs:
+        para_num = para.get("num")
+        enhanced_para = para.copy()
+        enhanced_para["page"] = paragraph_to_page.get(para_num, 0)
+        enhanced_paragraphs.append(enhanced_para)
+
+    # Заменяем в результате
+    result["paragraph_entities"] = enhanced_paragraphs
+
+    # Добавляем сводку по страницам (как было)
+    pages_info = []
+    global_para_idx = 0
+
+    for page_idx, page in enumerate(pages):
+        content = page.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            num_paragraphs = 0
+        else:
+            num_paragraphs = content.count("[PARAGRAPH_END]") + 1
+
+        if num_paragraphs > 0:
+            page_paragraphs = enhanced_paragraphs[global_para_idx:global_para_idx + num_paragraphs]
+
+            # Сущности на этой странице
+            page_entities = set()
+            for para in page_paragraphs:
+                page_entities.update(para.get("entities", []))
+
+            page_dict = {}
+            for entity in page_entities:
+                if entity in result["dictionary"]:
+                    page_dict[entity] = result["dictionary"][entity]
+
+            pages_info.append({
+                "page_num": page_idx + 1,
+                "page_dictionary": page_dict,
+                "entities_count": len(page_dict)  # Добавляем для удобства
+            })
+
+            global_para_idx += num_paragraphs
+        else:
+            pages_info.append({
+                "page_num": page_idx + 1,
+                "page_dictionary": {},
+                "entities_count": 0
+            })
+
+    result["pages"] = pages_info
+    result["total_pages"] = len(pages)  # Добавляем общее количество страниц
+
+    return result
 
 def process_document(doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Обработка одного документа — ОДИН ЗАПРОС на весь документ
+    Обработка одного документа со скользящим окном по страницам и контекстом между батчами
     """
 
     doc_id = doc.get("doc_id", "unknown")
-    print(f"\n📄 Обработка документа: {doc.get('source_file', 'unknown')}")
-    print(f"   ID: {doc_id}, язык: {doc.get('language', 'unknown')}")
+    print(f"\n📄 Обработка: {doc.get('source_file', 'unknown')}")
+    print(f"   ID: {doc_id}")
 
-    # Извлекаем весь текст целиком
-    full_text = extract_full_text(doc)
-    text_len = len(full_text)
-    print(f"   📊 Длина текста: {text_len} символов")
-
-    if text_len < 100:
-        print("   ⚠️ Текст слишком короткий")
+    pages = doc.get("pages", [])
+    if not pages:
+        print("   ⚠️ Нет страниц")
         return None
 
-    # Один запрос на весь документ
-    print(f"\n🔨 ОБРАБОТКА ДОКУМЕНТА (ОДИН ЗАПРОС)")
+    print(f"   📊 Всего страниц: {len(pages)}")
 
-    prompt = create_entity_extraction_prompt(full_text)
-    response = call_openrouter(prompt, doc_id)
+    # Создаём батчи со скользящим окном
+    batches = create_batches_with_context(doc)
+    print(f"   📦 Батчей: {len(batches)}")
 
-    if not response:
-        print("   ❌ Нет ответа от API")
+    # Инициализируем менеджер контекста
+    context_manager = BatchContextManager()
+
+    # Результаты
+    all_dictionaries = []
+    all_paragraph_entities = []
+    global_paragraph_num = 0
+
+    # Обрабатываем батчи последовательно
+    for batch_idx, (start_page, end_page, context, main_text) in enumerate(batches, 1):
+        print(f"\n   🔨 Батч {batch_idx}/{len(batches)} (страницы {start_page+1}-{end_page})")
+
+        # Получаем контекст из предыдущих батчей
+        batch_context = context_manager.get_context_prompt()
+
+        result = process_document_batch(
+            doc_id, start_page, end_page,
+            context, main_text,
+            batch_context,
+            global_paragraph_num
+        )
+
+        # Подсчитываем абзацы в текущем батче (даже если результат None, для корректного смещения)
+        page_indices = list(range(start_page, end_page))
+        paragraphs_in_batch = count_paragraphs_in_pages(doc, page_indices)
+
+        if result:
+            if "dictionary" in result:
+                all_dictionaries.append(result["dictionary"])
+                print(f"   ✅ Найдено сущностей: {len(result['dictionary'])}")
+
+            if "paragraph_entities" in result:
+                all_paragraph_entities.extend(result["paragraph_entities"])
+                print(f"   ✅ Обработано абзацев: {len(result['paragraph_entities'])}")
+
+            # Обновляем контекст менеджер с результатами
+            batch_pages_str = f"{start_page+1}-{end_page}"
+            context_manager.update(result, batch_pages_str, batch_idx)
+        else:
+            print(f"   ⚠️ Батч не обработан, пропускаем")
+
+        # Обновляем глобальный счётчик абзацев (всегда, даже если батч не обработан)
+        global_paragraph_num += paragraphs_in_batch
+
+        # Пауза между батчами
+        if batch_idx < len(batches):
+            time.sleep(config.DELAY_BETWEEN_REQUESTS)
+
+    # Объединяем словари (приоритет у более поздних батчей)
+    final_dictionary = {}
+    for d in all_dictionaries:
+        final_dictionary.update(d)
+
+    print(f"\n   📚 Всего уникальных сущностей: {len(final_dictionary)}")
+    print(f"   📚 Всего абзацев с сущностями: {len(all_paragraph_entities)}")
+
+    if not final_dictionary:
+        print("   ❌ Нет сущностей")
         return None
 
-    # Извлекаем текст ответа
-    try:
-        if "choices" not in response or not response["choices"]:
-            print("   ❌ Нет choices в ответе")
-            return None
-
-        message = response["choices"][0].get("message", {})
-        if "content" not in message:
-            print("   ❌ Нет content в message")
-            return None
-
-        result_text = message["content"]
-    except Exception as e:
-        print(f"   ❌ Ошибка извлечения ответа: {e}")
-        return None
-
-    # Парсим ответ
-    parsed = parse_llm_response(result_text, doc_id)
-
-    if not parsed:
-        print("   ❌ Не удалось распарсить ответ")
-        return None
-
-    # Проверяем наличие обязательных полей
-    if "dictionary" not in parsed:
-        print("   ❌ Ответ не содержит dictionary")
-        print(f"   Ключи в ответе: {list(parsed.keys())}")
-        return None
-
-    if "paragraph_entities" not in parsed:
-        print("   ❌ Ответ не содержит paragraph_entities")
-        print(f"   Ключи в ответе: {list(parsed.keys())}")
-        return None
-
-    # Проверяем, что словарь не пустой
-    if not parsed["dictionary"]:
-        print("   ⚠️ Словарь сущностей пуст")
-
-    print(f"\n   📚 Найдено сущностей: {len(parsed['dictionary'])}")
-    print(f"   📚 Обработано абзацев: {len(parsed['paragraph_entities'])}")
-
-    # Формируем результат
+    # Формируем базовый результат
     result = {
         "doc_id": doc_id,
         "source_file": doc.get("source_file", ""),
         "language": doc.get("language", ""),
-        "dictionary": parsed["dictionary"],
-        "paragraph_entities": parsed["paragraph_entities"]
+        "dictionary": final_dictionary,
+        "paragraph_entities": all_paragraph_entities
     }
+
+    # Добавляем информацию о страницах
+    result = add_page_info(result, doc)
 
     return result

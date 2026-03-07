@@ -1,0 +1,30 @@
+Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+(нет контекста страниц)
+
+
+
+### 📥 ТЕКСТ ДЛЯ ОБРАБОТКИ (страницы 1-2):
+[СТРАНИЦА 1]
+This paper shows first position, force and impedance control of mechanical systems during their (non-)contact motion. One may use such approach for design of mechatronics systems (for example, just of the modern building machines)  
+ 
+ 
+
+ Positioning is one of the important applications in motion control. There are two kinds of industry requirements to the positioning: 1) PTP path (Point-To-Point Path); 2) CP path (Continuous Path)  
+ 
+ 
+
+ The trapezoidal profile of speed reference is used for PTP path tracking. During acceleration and deceleration, the period of constant acceleration is controlled to attain maximum speed  
+ 
+ 
+
+ As to CP tracking, a trajectory of motion is predetermined and it is possible to know the several steps ahead at any time. If the motion reference generator knows two steps ahead, the velocity and the acceleration reference are calculated as well as position reference. The robust motion controller makes the motion system an acceleration controller with unity gain for nominal inertia and torque coefficient [1]  
+ 
+ 
+
+ This paper determines an equivalent acceleration to the disturbance, simple way to stabilize the system with the help of state feedback (i.e., position and velocity feedback), the transfer function $P_m(s)$ from acceleration reference to position. One may use special inverse system placed in front of $P_m(s)$ in order to recover the delay due to $P_m(s)$  
+ 
+ 
+
+ Since the input of $P_m(s)^{-1}$ is position reference $\theta^{ref}$ (parameter of rotational direction), which will have first and second derivatives as the any place of predetermined trajectory, CP tracking control is constructed by the combination of $P_m(s), P_m(s)^{-1}$ and state feedback in acceleration controller. The 

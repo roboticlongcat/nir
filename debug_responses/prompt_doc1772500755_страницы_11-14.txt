@@ -1,0 +1,13 @@
+Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+[КОНТЕКСТ: СТРАНИЦА 9]
+upstream baffle, vortices are generated, and their impingement on the downstream baffle leads to excitation of the acoustic eigen modes of the duct. Integration is carried out until the system reaches a steady state with well-defined periodic behavior of the system variables  
+ 
+ 
+
+ Numerical results for the dominant frequency in the acoustic signal at resonances are shown in Fig. 4 by the open circle symbols. The model results generally agree with the test data, predicting correctly the lock-in regions. Even the excitation of higher modes at low Strouhal frequency (in the mean velocity range of 10–13 m/s) is captured well by the modeling. One of the possible reasons for the excitation of higher modes, in particularly the third mode in this case, is the remoteness of the mean-flow Strouhal frequency from the closest natural frequencies, while the Strouhal frequency becomes a subharmonic of a higher mode. A fair agreement between model results and test data demonstrates that the theory developed can be used for practical design and control of the sound-vortex interaction in isothermal systems  
+ 
+ 
+
+ Let us now consider a system with heat release, similar to that shown in Fig. 1(b). Experiments on a dump combustor built at California Institute of Technology were described by Smith [19]. For certain values of the mean flow velocity and the fuel-to-oxidizer ratio, acoustic modes of the system were excited and accompanied by regular vortex shedding and cyclic heat release rate with periods of acoustic oscillations. Heat release had articulate maximums correlated with vortex impingement on a lower wall of the combustor chamber. An example of the spectrum of the acoustic signal measured is given in Fig 5(a) for a mean flow velocity at the dump plane of 22 m/s. The two sharp peaks, domin

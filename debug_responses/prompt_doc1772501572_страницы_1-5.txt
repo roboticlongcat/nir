@@ -1,0 +1,25 @@
+Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+(нет контекста страниц)
+
+
+
+### 📥 ТЕКСТ ДЛЯ ОБРАБОТКИ (страницы 1-5):
+[СТРАНИЦА 1]
+The role of the acoustic transducer in high quality image acquisition from medical ultrasound scanners is very important. In fact it determines the quality of an image. There are considerable efforts in designing transducers and determining the characteristics of the emitted field  
+ 
+ 
+
+ The goal of the 3D imaging is observing the real structure of the body organs. 2D-Array transducers are used to acquire real-time 3D images; in echocardiography, in monitoring fetus and in urology. Using 2D-Array eliminates the need of physical movement of 1D array for acquiring 3D images. It is able to focus acoustic beam in the elevation direction in comparison with 1D array that use lenses to do this. Calculating and simulating the acoustic fields are simpler and more economical than experimental tasks in order to determine the field pattern emitted from acoustic transducers  
+ 
+ 
+
+ There are different methods [1] for simulating the acoustic fields that most of them are based on the Rayleigh integral [2–12].
+
+[СТРАНИЦА 2]
+Approximate methods for quickly predicting the behavior of transducers especially when the observation point is beyond the near-field zone, have traditionally played an important role in design. Two approximations that have been widely used for sinusoidal excitation are based on the Fraunhoffer (far-field) and Fresnel (mid- and far-field) approximations.[13]  
+ 
+ 
+
+ In this paper a new software will be introduced, which is more efficient and has no approximation for near-field, that calculates the ultrasound field from array transducers. Here we calculate the Rayleigh integral by considering the points on the transducer surface that have the same distance from the observation point, so it reduce the double integral to
