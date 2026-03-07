@@ -1,11 +1,12 @@
 """
 Главный скрипт для обработки всех документов
-Один запрос на документ — максимальная скорость
+Многопоточная обработка + скользящее окно по страницам + контекст между батчами
 """
 
 import json
 import time
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List
 import config
 import document_processor
@@ -25,14 +26,20 @@ def load_results() -> List[Dict[str, Any]]:
         with open(config.RESULTS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data if isinstance(data, list) else []
-    except:
+    except json.JSONDecodeError:
+        print(f"⚠️ Файл результатов поврежден, создаем новый")
         return []
 
 def save_results(results: List[Dict[str, Any]]):
     """Сохранение результатов"""
     os.makedirs(os.path.dirname(config.RESULTS_FILE), exist_ok=True)
-    with open(config.RESULTS_FILE, 'w', encoding='utf-8') as f:
+
+    # Сохраняем во временный файл, затем переименовываем
+    temp_file = config.RESULTS_FILE + ".tmp"
+    with open(temp_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+
+    os.replace(temp_file, config.RESULTS_FILE)
     print(f"\n✅ Результаты сохранены в {config.RESULTS_FILE}")
 
 def print_summary(processed: int, failed: int, start_time: float):
@@ -47,9 +54,27 @@ def print_summary(processed: int, failed: int, start_time: float):
         print(f"   Среднее на документ: {elapsed/processed:.1f} сек")
     print("="*60)
 
+def process_single_document(doc: Dict[str, Any]) -> tuple:
+    """
+    Обработка одного документа (для параллельного выполнения)
+    Возвращает (doc_id, результат или None, имя_файла)
+    """
+    doc_id = doc.get("doc_id", "unknown")
+    filename = doc.get("source_file", "unknown")
+
+    try:
+        result = document_processor.process_document(doc)
+        return (doc_id, result, filename)
+    except Exception as e:
+        print(f"\n❌ Критическая ошибка в документе {filename}: {e}")
+        return (doc_id, None, filename)
+
 def main():
     print("="*60)
-    print("🔬 ОБРАБОТКА НАУЧНЫХ СТАТЕЙ (ОДИН ЗАПРОС НА ДОКУМЕНТ)")
+    print("🔬 ОБРАБОТКА НАУЧНЫХ СТАТЕЙ")
+    print(f"   Многопоточность: {config.MAX_WORKERS} workers")
+    print(f"   Скользящее окно: {config.PAGES_PER_BATCH} стр./{config.CONTEXT_OVERLAP} в контексте")
+    print(f"   Контекст между батчами: Да (резюмирующий)")
     print("="*60)
 
     if not check_api_key():
@@ -74,8 +99,10 @@ def main():
 
     # Сколько обработать
     try:
-        num = int(input("\nСколько документов обработать? (Enter - все): ") or len(documents))
-    except:
+        user_input = input("\nСколько документов обработать? (Enter - все): ").strip()
+        num = int(user_input) if user_input else len(documents)
+    except ValueError:
+        print("⚠️ Неверный ввод, обрабатываем все")
         num = len(documents)
 
     if num <= 0:
@@ -83,14 +110,16 @@ def main():
 
     # Берём необработанные
     to_process = []
-    for doc in documents[:num]:
+    for doc in documents:
         if doc.get("doc_id") not in processed_ids:
             to_process.append(doc)
+            if len(to_process) >= num:
+                break
 
     print(f"📊 Будет обработано: {len(to_process)}")
 
     if not to_process:
-        print("✅ Все уже обработаны")
+        print("✅ Все документы уже обработаны")
         return
 
     # Статистика
@@ -99,28 +128,35 @@ def main():
     failed = 0
     new_results = []
 
-    # Обрабатываем
-    for idx, doc in enumerate(to_process, 1):
-        print(f"\n{'='*60}")
-        print(f"📄 ДОКУМЕНТ {idx}/{len(to_process)}")
-        print(f"   ID: {doc.get('doc_id')}")
-        print(f"   Файл: {doc.get('source_file')}")
-        print(f"{'='*60}")
+    # Многопоточная обработка
+    print(f"\n🚀 Запуск {config.MAX_WORKERS} потоков...")
 
-        result = document_processor.process_document(doc)
+    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
+        # Запускаем все задачи
+        future_to_doc = {
+            executor.submit(process_single_document, doc): doc
+            for doc in to_process
+        }
 
-        if result:
-            new_results.append(result)
-            processed += 1
-            print(f"\n✅ Документ {idx} обработан")
-        else:
-            failed += 1
-            print(f"\n❌ Ошибка документа {idx}")
+        # Собираем результаты по мере завершения
+        for i, future in enumerate(as_completed(future_to_doc), 1):
+            doc = future_to_doc[future]
+            filename = doc.get("source_file", "unknown")
 
-        # Пауза между документами
-        if idx < len(to_process):
-            print(f"\n⏳ Пауза {config.DELAY_BETWEEN_REQUESTS} сек...")
-            time.sleep(config.DELAY_BETWEEN_REQUESTS)
+            try:
+                doc_id, result, filename = future.result(timeout=300)  # 5 минут таймаут
+
+                if result:
+                    new_results.append(result)
+                    processed += 1
+                    print(f"\n✅ [{i}/{len(to_process)}] {filename} — ГОТОВ")
+                else:
+                    failed += 1
+                    print(f"\n❌ [{i}/{len(to_process)}] {filename} — ОШИБКА")
+
+            except Exception as e:
+                failed += 1
+                print(f"\n❌ [{i}/{len(to_process)}] {filename} — ОШИБКА: {e}")
 
     # Сохраняем
     save_results(existing + new_results)

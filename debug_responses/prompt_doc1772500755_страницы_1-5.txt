@@ -1,0 +1,17 @@
+Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+(нет контекста страниц)
+
+
+
+### 📥 ТЕКСТ ДЛЯ ОБРАБОТКИ (страницы 1-5):
+[СТРАНИЦА 1]
+Intensive pressure and flow fluctuations in the combustion chambers of rocket motors and similar unstable phenomena in industrial applications involving ducts with isothermal mean flow are important problems in mechanical engineering. In the development stage of rocket motors, practically all of them experience some kind of these instabilities. This effect is very harmful, since it may lead to intensive vibrations, unacceptable for navigation systems and payload, and to enhanced heat transfer, which can result in overheating the structure. In extreme cases, rockets are damaged or destroyed by mechanical or thermal mechanisms related to acoustic-combustion instability. The problem of the acoustic instability in rocket flows attracted a lot of attention by researchers, and extensive theoretical, experimental, and numerical studies were undertaken [1–6]  
+ 
+ 
+
+ There is a variety of causes for acoustic instability in the systems with mean flow and heat addition. This paper is concerned only with those that are coupled with vortex shedding occurring inside the chambers. This type of instability can be approximately subdivided into two groups. In the first one, the vorticity impinging on the structure acts as an acoustic disturbance. A scheme of such a process is shown in Fig. 1(a). There are baffles in the chamber that are analogous to restrictors between propellant segments in actual solid-fuel rocket motors. Vortices are generated on upstream baffles and impinge on downstream restrictors. Acoustic disturbances produced at the moments of vortex collisions feed back to the process of vortex shedding. A closed-loop system is formed that can exhibit self-excited oscillations at the suitable geometry and flow
+
+[СТРАНИЦА 2]
+condit

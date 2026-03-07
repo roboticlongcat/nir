@@ -1,0 +1,33 @@
+Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+[КОНТЕКСТ: СТРАНИЦА 4]
+2. THEORETICAL MODEL
+ 
+ A duct with a mean flow is considered as a general configuration for analyzing acoustic instabilities inside real-world chambers. Examples of the parts of the duct, where all major processes happen, are shown in Fig. 1 for two cases of isothermal flow and flow with heat addition. Only longitudinal acoustics is the subject of this work, and one-dimensional acoustic theory is applied to model disturbed motions. Mach numbers of both mean and oscillating flow components are considered small  
+ 
+ 
+
+ Two locations inside the motor chamber, which are important for the phenomena studied, are the point of vortex formation and the point of vortex impingement on the structure (or its position when it burns abruptly). The first location is associated with an upstream baffle (Fig. 1a) or a rearward-facing step (Fig. 1b). The second location is either the downstream baffle (Fig. 1a) or the point of vortex burning (Fig. 1b), which depends on chemical and hydrodynamic properties of the system  
+ 
+ 
+
+ Disturbed motions in the chamber are represented through the acoustic mode expansion in the following form [12]:  
+ 
+ 
+
+ 
+ 
+ 
+ 
+ where $p_0$ is the mean undisturbed pressure, $\eta_n(t)$ is the time-varying amplitude of the $n^{\text{th}}$ mode, $\psi_n(x)$ is the pressure mode shape, $\gamma$ is the gas constant, and $k_n$ is the modal wave number  
+ 
+ 
+
+ The dynamics of the modal time variables will be determined using a one-dimensional wave equation with spatially averaged gas properties over a chamber volume and two driving sources pertinent to the phenomena studied [13]:  
+ 
+ 
+
+ 
+ 
+ where $x$ is the horizontal coordinate (starting from an upstream end of the duct), $a$ is the speed of sound, $\rho$ is the gas density, $F$ is the force per unit of mass, and $Q$ is the heat

@@ -1,0 +1,40 @@
+Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+(нет контекста страниц)
+
+
+
+### 📥 ТЕКСТ ДЛЯ ОБРАБОТКИ (страницы 1-3):
+[СТРАНИЦА 1]
+Research objectives
+ 
+ It’s necessary to define the equivalent disturbance in order to consider the robust control of motion actuated by electric motor. The explanation and the interpretation of robustness and stiffness in motion control lead to definition of disturbance. The general definition for single-input and single-output (SISO) linear system is discussed  
+ 
+ 
+
+ There are various proposals to estimate the disturbance $\tilde{d}$. This paper introduces a disturbance observer. Gopinath’s method is a systematic way to construct such an observer [1]. Once $\tilde{d}$ is estimated, the input of the mechanical system $u(t)$ will be sum of two parts:  
+ 
+ 
+
+ 
+ 
+ The first term in the right side is a driving input to excite the system. The second term is a compensation to suppress the equivalent disturbance and the system acquires robustness. To cancel the equivalent disturbance, the compensation input is made by using the estimated equivalent-disturbance $\hat{d}$. Since $\hat{d}$ will be delayed by the lag poles in the disturbance observer, the compensation of the equivalent disturbance will be also delayed by the same amount. It’s possible to design such delay as small as possible not to make robust stability deteriorate. The compensation input $u^{dis}$ will change the original system into the nominal system without any disturbance  
+ 
+ 
+
+ It is noted that the design of $u^{ref}$ comes from the motion reference generator  
+ 
+ 
+
+ Generally total controller will have cascade of the outer loop to bring the desired output and the inner loop by disturbance observer  
+ 
+ 
+
+ The previous design method is applied to the motion system described by:  
+ 
+ 
+
+ 
+ 
+ Here $J$ – inertia; $K_t$ – torque coefficient of electric motor; $T

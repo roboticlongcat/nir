@@ -1,0 +1,44 @@
+Ты — система анализа научных статей. Твоя задача — выделить ключевые смысловые сущности из указанных страниц, используя контекст.
+
+### 📥 КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ:
+[КОНТЕКСТ: СТРАНИЦА 4]
+3. EFFECTIVE AND VARIABLE PARAMETERS IN THIS SOFTWARE
+ 
+ - Number of elements (1D & 2D array): they are variable in both elevation and azimuth directions. - Size of the elements: width and length of the individual piezoelectric elements. - Element spacing: spaces between two adjacent elements in both elevation and azimuth directions. - Frequency: the frequency of the emitted ultrasound wave. - Sound velocity of the medium: the velocity of the sound propagation in the medium. - Amplitude of excitation.  
+ 
+ 
+
+ 4. RESULTS
+ 
+ The array is located on the $xy$ plane, and the results of the acoustic field are shown in the $xz$ plane, which is orthogonal to the middle of $xy$ plane, Fig. 2. The calculated pattern in the results are from 2D-Array transducer, which is defined in table 1 unless the other parameters are stated  
+ 
+ 
+
+ Table 1. Parameters of 2-D transducer array
+ 
+ | Number of elements | 16×16 | | :--- | :--- | | Size of Element | 0.4×0.4 mm | | Element spacing | 0 mm | | Sound velocity in the medium | 1540 m/s | | Density of the medium | 1000 kg/m$^3$ | | Frequency | 3.5 MHz |  
+ 
+ 
+
+ Fig. 2. 2D-Array transducer on the $xyz$ coordinate and the plane of receiving acoustic field
+
+[КОНТЕКСТ: СТРАНИЦА 5]
+4.1. The effect of increasing frequency and size of the transducer  
+ 
+ 
+
+ In this section we just increase the frequency, without changing the other parameters of table 1 in order to study the effect of the frequency on the beam pattern. The amount of divergence of the far filed [16] is shown as  
+ 
+ 
+
+ 
+ 
+ where $\lambda$ is the wavelength, $c$ is the sound velocity in the medium, $f$ is the frequency and $D$ shows the diameter of the transducer  
+ 
+ 
+
+ By increasing the frequency in the above equation, the main lobe wide will reduce  
+ 
+ 
+
+ The length of the near filed [16] c
